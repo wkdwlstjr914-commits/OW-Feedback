@@ -1,0 +1,8 @@
+.streamlit/secrets.toml
+.streamlit/google_oauth_token.json
+__pycache__/
+*.pyc
+app.py.bak
+app_restored.py
+streamlit.oauth.err.log
+streamlit.oauth.out.log

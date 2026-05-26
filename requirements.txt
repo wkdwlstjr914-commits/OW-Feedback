@@ -1,0 +1,9 @@
+﻿streamlit>=1.45,<2
+google-api-python-client>=2.170.0,<3
+google-auth>=2.40.0,<3
+google-auth-oauthlib>=1.2.0,<2
+google-genai>=1.16.0,<2
+opencv-python-headless>=4.10.0,<5
+numpy>=2.2,<3
+ffmpeg-python>=0.2.0,<1
+plotly>=5.24,<6
