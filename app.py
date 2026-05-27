@@ -32,7 +32,7 @@ MODEL_LABEL = "Gemini 3.5 Flash"
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 TOKEN_PATH = Path(__file__).resolve().parent / ".streamlit" / "google_oauth_token.json"
 CATEGORY_LABELS = {"aim": "Aim", "move": "Move", "judge": "Judge", "op": "Op"}
-LANE_LABELS = {"strength": "?섑븳 ?λ㈃", "weakness": "蹂댁셿 ?λ㈃"}
+LANE_LABELS = {"strength": "Strength", "weakness": "Weakness"}
 ROLE_WEIGHTS: dict[str, dict[str, int]] = {
     "tank": {"aim": 10, "move": 20, "judge": 30, "op": 40},
     "dps": {"aim": 40, "move": 20, "judge": 25, "op": 15},
@@ -347,7 +347,7 @@ def render_header() -> None:
         <div class="ow-header">
             <div class="ow-kicker">AI Replay Review</div>
             <div class="ow-title">Overwatch AI Coach MVP</div>
-            <div class="ow-subtitle">醫뗭? ?λ㈃怨?蹂댁셿 ?λ㈃??遺꾨━?댁꽌, 洹쇨굅 ?꾨젅?꾧낵 ?ъ깮 援ш컙源뚯? ??踰덉뿉 蹂듦린?섎뒗 HUD??肄붿묶 ??쒕낫??/div>
+            <div class="ow-subtitle">Review strengths and weaknesses side by side with timeline evidence, frames, and replay clips.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -443,42 +443,38 @@ def render_drive_http_error(context_label: str, folder_id: str, exc: HttpError) 
     status_code, reason, message = extract_http_error_details(exc)
     normalized_folder_id = normalize_drive_folder_id(folder_id)
 
-    st.error(f"{context_label}???ㅽ뙣?덉뒿?덈떎. Google Drive ?묎렐 ?ㅼ젙???뺤씤?댁＜?몄슂.")
-    st.caption(f"?붿껌 ?대뜑 ID: `{normalized_folder_id}`")
+    st.error(f"{context_label} failed. Please check the Google Drive setup.")
+    st.caption(f"Requested folder ID: `{normalized_folder_id}`")
     if status_code:
-        st.caption(f"Google Drive ?묐떟 肄붾뱶: `{status_code}`")
+        st.caption(f"Google Drive status: `{status_code}`")
     if reason:
         st.caption(f"Google Drive reason: `{reason}`")
-    st.caption(f"?ㅻ쪟 硫붿떆吏: `{message}`")
+    st.caption(f"Message: `{message}`")
 
     hints: list[str] = []
     if status_code == 404 or reason == "notFound":
-        hints.append("?대뜑 ID ?먮뒗 ?대뜑 URL???섎せ?섏뿀嫄곕굹, ?대떦 ?대뜑媛 ?꾩옱 濡쒓렇?명븳 Google 怨꾩젙 Drive?먯꽌 蹂댁씠吏 ?딆뒿?덈떎.")
+        hints.append("The folder ID or folder URL is incorrect, or the current Google account cannot see that folder.")
     if status_code == 401 or reason in {"authError", "invalidCredentials"}:
-        hints.append("OAuth ?좏겙??留뚮즺?섏뿀嫄곕굹 ?섎せ?섏뿀?듬땲?? 濡쒖뺄?먯꽌 ?ㅼ떆 濡쒓렇?명빐 ???좏겙 JSON??留뚮뱾??諛고룷 ?쒗겕由우뿉 ?ｌ뼱二쇱꽭??")
+        hints.append("The OAuth token is expired or invalid. Create a new token locally and replace GOOGLE_OAUTH_TOKEN_JSON in Streamlit Secrets.")
     if status_code == 403 or reason in {"insufficientPermissions", "forbidden", "insufficientFilePermissions"}:
         if not token_secret_has_drive_scope():
-            hints.append("?꾩옱 OAuth ?좏겙 JSON??Google Drive 踰붿쐞媛 ?놁뒿?덈떎. Drive 沅뚰븳?쇰줈 ?ㅼ떆 濡쒓렇?명빐 ???좏겙??諛쒓툒?댁빞 ?⑸땲??")
+            hints.append("The current OAuth token does not include the full Google Drive scope. Re-issue the token with https://www.googleapis.com/auth/drive.")
         else:
-            hints.append("?꾩옱 濡쒓렇?명븳 Google 怨꾩젙?????대뜑 ?묎렐 沅뚰븳???녾굅?? 怨듭쑀 ?쒕씪?대툕/媛쒖씤 ?쒕씪?대툕 沅뚰븳??遺議깊빀?덈떎.")
+            hints.append("The current Google account does not have enough access to this folder.")
     if not hints:
-        hints.append("諛고룷 Secrets???대뜑 ID, OAuth ?대씪?댁뼵??JSON, OAuth ?좏겙 JSON???쒕줈 媛숈? Google 怨꾩젙 湲곗??몄? ?뺤씤?댁＜?몄슂.")
+        hints.append("Check whether the folder ID, OAuth client JSON, and OAuth token JSON all belong to the same Google account context.")
     for hint in hints:
         st.write(f"- {hint}")
-
-
 def render_oauth_refresh_error(context_label: str, exc: RefreshError) -> None:
-    st.error(f"{context_label} 중 Google OAuth 토큰 갱신에 실패했습니다.")
-    st.caption(f"오류 메시지: `{exc}`")
-    st.write("- 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`이 만료되었거나 폐기되었을 수 있습니다.")
-    st.write("- Google OAuth 앱이 `Testing` 상태라면 refresh token이 며칠 후 자동 만료될 수 있습니다.")
+    st.error(f"{context_label}: Google OAuth token refresh failed.")
+    st.caption(f"Message: `{exc}`")
+    st.write("- The deployed GOOGLE_OAUTH_TOKEN_JSON may be expired, revoked, or mismatched with the OAuth client.")
+    st.write("- If the Google OAuth app is still in Testing mode, refresh tokens may expire automatically.")
     if token_secret_is_readonly_drive():
-        st.write("- 현재 토큰은 `drive.readonly`만 포함하고 있어 Drive 업로드를 할 수 없습니다. `https://www.googleapis.com/auth/drive` 권한으로 다시 발급해야 합니다.")
+        st.write("- The current token only has drive.readonly, so Drive uploads cannot work. Re-issue the token with https://www.googleapis.com/auth/drive.")
     else:
-        st.write("- 새 토큰 JSON에는 `https://www.googleapis.com/auth/drive` scope와 유효한 `refresh_token`이 포함되어야 합니다.")
-    st.write("- 로컬에서 다시 로그인해 새 토큰을 발급한 뒤, 그 JSON 전체를 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`에 다시 넣어주세요.")
-
-
+        st.write("- The replacement token must include https://www.googleapis.com/auth/drive and a valid refresh_token.")
+    st.write("- Create a new token locally, then paste its full JSON into the deployed Streamlit Secret GOOGLE_OAUTH_TOKEN_JSON.")
 def load_oauth_credentials() -> Credentials | None:
     token_secret = get_oauth_token_secret()
     if token_secret:
@@ -529,15 +525,15 @@ def clear_oauth_credentials() -> None:
 def authorize_drive_oauth() -> None:
     config = get_oauth_client_config()
     if not config:
-        st.error("`GOOGLE_OAUTH_CLIENT_JSON` ?쒗겕由우씠 ?꾩슂?⑸땲??")
+        st.error("GOOGLE_OAUTH_CLIENT_JSON is required.")
         st.stop()
     flow = InstalledAppFlow.from_client_config(config, DRIVE_SCOPES)
     try:
         creds = flow.run_local_server(host="localhost", port=0, open_browser=True)
     except webbrowser.Error:
-        st.error("배포된 Streamlit 앱에서는 로컬 브라우저 OAuth 로그인을 직접 열 수 없습니다.")
-        st.write("- 이 버튼은 로컬 PC에서만 사용 가능합니다.")
-        st.write("- 로컬에서 로그인해 새 `token.json`을 만든 뒤, 그 내용을 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`에 넣어주세요.")
+        st.error("The deployed Streamlit app cannot open a local browser OAuth login.")
+        st.write("- This button only works on a local machine.")
+        st.write("- Create a new token.json locally, then paste it into the deployed Streamlit Secret GOOGLE_OAUTH_TOKEN_JSON.")
         st.stop()
     save_oauth_credentials(creds)
 
@@ -545,43 +541,40 @@ def authorize_drive_oauth() -> None:
 def get_drive_service():
     config = get_oauth_client_config()
     if not config:
-        st.error("`GOOGLE_OAUTH_CLIENT_JSON` ?쒗겕由우씠 ?놁뒿?덈떎. OAuth ?대씪?댁뼵??JSON??異붽??댁빞 Google Drive ?먮룞 ??μ씠 ?숈옉?⑸땲??")
+        st.error("GOOGLE_OAUTH_CLIENT_JSON is missing. Add the OAuth client JSON to Streamlit Secrets.")
         st.stop()
 
     if get_oauth_token_secret().strip() and not token_secret_has_drive_scope():
-        st.error("諛고룷??OAuth ?좏겙 JSON??Google Drive 沅뚰븳???놁뒿?덈떎.")
-        st.write("- 濡쒖뺄?먯꽌 ???깆쑝濡??ㅼ떆 Google 濡쒓렇?명빐 ???좏겙??諛쒓툒?섏꽭??")
-        st.write("- ???좏겙 JSON??`scopes`??`https://www.googleapis.com/auth/drive`媛 ?ы븿?섏뼱???⑸땲??")
-        st.write("- 洹?媛믪쓣 諛고룷 Secrets??`GOOGLE_OAUTH_TOKEN_JSON`???ㅼ떆 ?ｌ뼱二쇱꽭??")
+        st.error("The deployed OAuth token does not include full Google Drive access.")
+        st.write("- Re-issue the token locally with https://www.googleapis.com/auth/drive.")
+        st.write("- Replace GOOGLE_OAUTH_TOKEN_JSON in Streamlit Secrets with the new token JSON.")
         st.stop()
 
     try:
         creds = load_oauth_credentials()
     except RefreshError as exc:
-        render_oauth_refresh_error("Google Drive 연결 준비", exc)
+        render_oauth_refresh_error("Google Drive initialization", exc)
         st.stop()
     if not creds:
         if is_cloud_runtime():
-            st.error("배포된 앱에는 유효한 Drive OAuth 토큰이 아직 없습니다.")
-            st.write("- Streamlit Cloud에서는 로컬 브라우저 OAuth 로그인을 직접 실행할 수 없습니다.")
-            st.write("- 로컬 PC에서 이 앱으로 Google 로그인 후 새 `token.json`을 만드세요.")
-            st.write("- 그 JSON 전체를 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`에 붙여넣으면 됩니다.")
+            st.error("No valid Drive OAuth token is available in the deployed app.")
+            st.write("- Streamlit Cloud cannot open a local browser OAuth flow.")
+            st.write("- Create token.json on a local machine first.")
+            st.write("- Paste that full JSON into GOOGLE_OAUTH_TOKEN_JSON in Streamlit Secrets.")
         else:
-            st.warning("Google Drive ?먮룞 ??κ낵 ??λ낯 遺덈윭?ㅺ린瑜??꾪빐 Google 濡쒓렇???곌껐???꾩슂?⑸땲??")
+            st.warning("Google Drive login is required for auto-save and saved-report loading.")
             connect_col, reset_col = st.columns(2)
             with connect_col:
-                if st.button("Google Drive 濡쒓렇???곌껐", type="primary"):
+                if st.button("Connect Google Drive", type="primary"):
                     authorize_drive_oauth()
                     st.rerun()
             with reset_col:
-                if st.button("저장된 로그인 초기화"):
+                if st.button("Reset Saved Login"):
                     clear_oauth_credentials()
                     st.rerun()
         st.stop()
 
     return build("drive", "v3", credentials=creds)
-
-
 def normalize_drive_folder_id(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
@@ -1247,19 +1240,17 @@ def render_detail_panel(
             f"""
             <div class='detail-panel'>
                 <div class='detail-heading'>{item['timestamp']} | {item['metric_name']}</div>
-                <p><b>?λ㈃ ?붿빟</b><br>{item['summary']}</p>
-                <p><b>?됯? 洹쇨굅</b><br>{item['evaluation_basis']}</p>
-                <p><b>?쇰뱶諛?諛⑺뼢</b><br>{item['feedback_direction']}</p>
-                <p><b>?먯씤 1</b><br>{item['primary_cause']}</p>
-                <p><b>?먯씤 2</b><br>{item['secondary_cause']}</p>
-                <p><b>?ㅽ뻾 猷⑦떞</b><br>{item['action_item']}</p>
-                <p><b>?좊ː??/b><br>{item['confidence']}</p>
+                <p><b>Summary</b><br>{item['summary']}</p>
+                <p><b>Evaluation Basis</b><br>{item['evaluation_basis']}</p>
+                <p><b>Feedback Direction</b><br>{item['feedback_direction']}</p>
+                <p><b>Primary Cause</b><br>{item['primary_cause']}</p>
+                <p><b>Secondary Cause</b><br>{item['secondary_cause']}</p>
+                <p><b>Action Item</b><br>{item['action_item']}</p>
+                <p><b>Confidence</b><br>{item['confidence']}</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
-
-
 def render_report(
     result: dict[str, Any],
     quality: VideoQuality,
@@ -1291,11 +1282,12 @@ def render_report(
         st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
         st.plotly_chart(build_radar_chart(scores), use_container_width=True)
     with meta_col:
-        st.markdown("<div class='ow-card'><div class='ow-card-title'>?곹깭 硫뷀?</div>", unsafe_allow_html=True)
+        st.markdown("<div class='ow-card'><div class='ow-card-title'>Session Meta</div>", unsafe_allow_html=True)
         st.markdown(
-            f"**?곸긽 湲몄씠**  \n{quality.duration_sec / 60:.1f} min  \n**?댁긽??*  \n{quality.width}x{quality.height} / {quality.fps:.1f}fps"
+            f"**Video Length**  \n{quality.duration_sec / 60:.1f} min  \n**Resolution**  \n{quality.width}x{quality.height} / {quality.fps:.1f}fps"
         )
         st.markdown("</div>", unsafe_allow_html=True)
+
     enemy_comp_read = result.get("enemy_comp_read", {})
     if any([enemy_comp_read.get("tank"), enemy_comp_read.get("dps"), enemy_comp_read.get("support")]):
         st.markdown(
@@ -1308,16 +1300,17 @@ def render_report(
             """,
             unsafe_allow_html=True,
         )
+
     st.subheader("Common Metrics 60")
     for metric in [result["metrics"][item["key"]] for item in COMMON_METRICS]:
         st.markdown(
             f"""
             <div class="ow-card">
                 <div class="ow-card-title">{metric['label']}</div>
-                <div><b>?먯닔</b> {metric.get('score', 0)} / 媛以묒튂 {metric.get('score_weight', 0)}</div>
-                <div><b>?됯? 諛⑹떇</b><br>{metric.get('evaluation', '-')}</div>
-                <div style="margin-top:0.35rem;"><b>?쇰뱶諛?諛⑺뼢</b><br>{metric.get('feedback_direction', '-')}</div>
-                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | ??? ?좊ː???댁쑀: {metric.get('low_confidence_reason', '') or '-'}</div>
+                <div><b>Score</b> {metric.get('score', 0)} / Weight {metric.get('score_weight', 0)}</div>
+                <div><b>Evaluation</b><br>{metric.get('evaluation', '-')}</div>
+                <div style="margin-top:0.35rem;"><b>Coaching Direction</b><br>{metric.get('feedback_direction', '-')}</div>
+                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | low-confidence reason: {metric.get('low_confidence_reason', '') or '-'}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1331,10 +1324,10 @@ def render_report(
             f"""
             <div class="ow-card">
                 <div class="ow-card-title">{metric['label']}</div>
-                <div><b>?먯닔</b> {metric.get('score', 0)} / 媛以묒튂 {metric.get('score_weight', 0)}</div>
-                <div><b>?됯? 諛⑹떇</b><br>{metric.get('evaluation', '-')}</div>
-                <div style="margin-top:0.35rem;"><b>?쇰뱶諛?諛⑺뼢</b><br>{metric.get('feedback_direction', '-')}</div>
-                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | ??? ?좊ː???댁쑀: {metric.get('low_confidence_reason', '') or '-'}</div>
+                <div><b>Score</b> {metric.get('score', 0)} / Weight {metric.get('score_weight', 0)}</div>
+                <div><b>Evaluation</b><br>{metric.get('evaluation', '-')}</div>
+                <div style="margin-top:0.35rem;"><b>Coaching Direction</b><br>{metric.get('feedback_direction', '-')}</div>
+                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | low-confidence reason: {metric.get('low_confidence_reason', '') or '-'}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1350,26 +1343,26 @@ def render_report(
         item for item in timeline_items if item["lane"] in lane_filter and item["category"] in category_filter and item["event_type"] in event_filter
     ]
     if not filtered_items:
-        st.info("?꾩옱 ?꾪꽣??留욌뒗 ?대깽?멸? ?놁뒿?덈떎.")
+        st.info("No events match the current filters.")
     for item in filtered_items:
         render_timeline_item(item)
 
-    st.subheader("?섑븳 ?λ㈃")
+    st.subheader("Strength Clips")
     for index, item in enumerate([it for it in filtered_items if it["lane"] == "strength"], start=1):
         render_detail_panel(f"Strength {index}", item, candidate_map, frame_map, video_bytes)
 
-    st.subheader("蹂댁셿 ?λ㈃")
+    st.subheader("Weakness Clips")
     for index, item in enumerate([it for it in filtered_items if it["lane"] == "weakness"], start=1):
         render_detail_panel(f"Weakness {index}", item, candidate_map, frame_map, video_bytes)
 
-    st.subheader("?곗뒪 ?먯씤")
+    st.subheader("Death Causes")
     for cause in result.get("death_causes", []):
         st.markdown(
             f"""
             <div class="ow-card">
                 <div class="ow-card-title">{cause['timestamp']} | Death Cause</div>
-                <div><b>二쇱썝??/b><br>{cause['primary']}</div>
-                <div style="margin-top:0.45rem;"><b>蹂댁“?먯씤</b><br>{cause['secondary']}</div>
+                <div><b>Primary Cause</b><br>{cause['primary']}</div>
+                <div style="margin-top:0.45rem;"><b>Secondary Cause</b><br>{cause['secondary']}</div>
                 <div class="ow-meta">candidate={cause['candidate_id']} / confidence={cause['confidence']}</div>
             </div>
             """,
@@ -1377,19 +1370,19 @@ def render_report(
         )
 
     if result.get("recommended_focus"):
-        st.subheader("?곗꽑 媛쒖꽑 怨쇱젣")
+        st.subheader("Recommended Focus")
         for focus in result["recommended_focus"]:
             st.markdown(f"- {focus}")
 
     if result.get("recommended_focus_guides"):
-        st.subheader("媛쒖꽑 ?ㅻ챸 媛?대뱶")
+        st.subheader("Improvement Guides")
         for guide in result["recommended_focus_guides"]:
             st.markdown(
                 f"""
                 <div class="ow-card">
                     <div class="ow-card-title">{guide.get('title', '-')}</div>
-                    <div><b>??以묒슂?쒓?</b><br>{guide.get('why_it_matters', '-')}</div>
-                    <div style="margin-top:0.45rem;"><b>?ㅼ쓬 援먯쟾 ?곸슜踰?/b><br>{guide.get('how_to_apply', '-')}</div>
+                    <div><b>Why It Matters</b><br>{guide.get('why_it_matters', '-')}</div>
+                    <div style="margin-top:0.45rem;"><b>How To Apply</b><br>{guide.get('how_to_apply', '-')}</div>
                     {render_enemy_comp_context(guide.get('enemy_comp_context', ''))}
                 </div>
                 """,
@@ -1397,18 +1390,16 @@ def render_report(
             )
 
     if result.get("result_link"):
-        st.success(f"寃곌낵 JSON ????꾨즺: {result['result_link']}")
+        st.success(f"Result JSON uploaded: {result['result_link']}")
     elif result.get("upload_error"):
-        st.info("Drive ????놁씠 ?붾㈃ 寃곌낵? JSON ?ㅼ슫濡쒕뱶??怨꾩냽 ?ъ슜?????덉뒿?덈떎.")
+        st.info("Drive upload failed, but you can still review the report on screen and download the JSON manually.")
 
     st.download_button(
-        "寃곌낵 JSON ?ㅼ슫濡쒕뱶",
+        "Download Result JSON",
         data=json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8"),
         file_name=f"analysis_{result.get('input_video', {}).get('name', 'report')}.json",
         mime="application/json",
     )
-
-
 def main() -> None:
     inject_css()
     render_header()
@@ -1417,36 +1408,36 @@ def main() -> None:
     output_folder_id = get_secret("DRIVE_OUTPUT_FOLDER_ID")
     gemini_api_key = get_secret("GEMINI_API_KEY")
     if not input_folder_id or not output_folder_id or not gemini_api_key:
-        st.warning("?쒗겕由우씠 鍮꾩뼱 ?덉뒿?덈떎. README??secrets ?덉떆瑜?梨꾩썙二쇱꽭??")
+        st.warning("Required secrets are missing. Please fill in the Streamlit Secrets values from the README example.")
         st.stop()
 
     drive = get_drive_service()
     try:
         videos = list_videos(drive, input_folder_id)
     except HttpError as exc:
-        render_drive_http_error("입력 폴더 영상 목록 조회", input_folder_id, exc)
+        render_drive_http_error("Input folder video listing", input_folder_id, exc)
         st.stop()
     if not videos:
-        st.info("?낅젰 ?대뜑??遺꾩꽍 媛?ν븳 鍮꾨뵒?ㅺ? ?놁뒿?덈떎.")
+        st.info("No analyzable video files were found in the input Drive folder.")
         st.stop()
     try:
         saved_reports = list_saved_reports(drive, output_folder_id)
     except HttpError as exc:
-        render_drive_http_error("출력 폴더 저장 결과 조회", output_folder_id, exc)
+        render_drive_http_error("Output folder report listing", output_folder_id, exc)
         saved_reports = []
     weekly_report_count = count_reports_this_kst_week(saved_reports)
 
     usage_col, saved_col = st.columns(2)
     with usage_col:
-        render_stat_card("KST Weekly Analyses", str(weekly_report_count), "?쒓뎅?쒓컙 ?붿슂??00:00 湲곗? ?대쾲 二?????깃났 ?잛닔")
+        render_stat_card("KST Weekly Analyses", str(weekly_report_count), "Successful report saves counted from Monday 00:00 KST.")
     with saved_col:
         render_stat_card("Saved Reports", str(len(saved_reports)), "JSON reports saved in the output Drive folder")
 
     video_by_id = {video["id"]: video for video in videos}
     video_by_name = {video["name"]: video for video in videos}
-    mode = st.radio("?묒뾽 紐⑤뱶", options=["??遺꾩꽍", "??λ맂 遺꾩꽍 蹂닿린"], horizontal=True)
+    mode = st.radio("Mode", options=["New Analysis", "View Saved Reports"], horizontal=True)
 
-    if mode == "??遺꾩꽍":
+    if mode == "New Analysis":
         top_left, top_right, top_third = st.columns([1.6, 1.0, 1.0])
         with top_left:
             selected = st.selectbox("Select Video", options=videos, format_func=lambda item: item["name"])
@@ -1458,26 +1449,26 @@ def main() -> None:
         if not st.button("Start Analysis", type="primary"):
             return
 
-        with st.status("분석 진행 중", expanded=True) as status:
-            st.write("1) Drive?먯꽌 ?곸긽 ?ㅼ슫濡쒕뱶")
+        with st.status("Analysis in progress", expanded=True) as status:
+            st.write("1) Downloading the source video from Google Drive")
             local_video = download_video(drive, selected["id"], selected["name"])
             video_bytes = local_video.read_bytes()
             video_hash = compute_file_hash(local_video)
 
-            st.write("2) ?낅젰 ?덉쭏 ?먭?")
+            st.write("2) Checking input quality")
             quality = probe_video(local_video)
 
-            st.write("3) ?대깽???꾨낫 援ш컙 ?섏쭛")
+            st.write("3) Detecting event candidates")
             candidates = detect_event_candidates(local_video)
             if not candidates:
-                status.update(label="?대깽???꾨낫 異붿텧 ?ㅽ뙣", state="error")
-                st.error("?대깽???꾨낫 援ш컙??李얠? 紐삵뻽?듬땲??")
+                status.update(label="Event candidate extraction failed", state="error")
+                st.error("No event candidates were detected in this video.")
                 return
 
-            st.write("4) ?꾨낫 援ш컙蹂??꾨젅??異붿텧")
+            st.write("4) Extracting evidence frames for each candidate")
             frame_map = collect_candidate_frames(local_video, candidates)
 
-            st.write("5) Gemini 3.5 Flash 遺꾩꽍")
+            st.write("5) Running Gemini 3.5 Flash analysis")
             try:
                 result, usage = gemini_analyze(
                     api_key=gemini_api_key,
@@ -1489,7 +1480,7 @@ def main() -> None:
                     video_hash=video_hash,
                 )
             except Exception as exc:
-                status.update(label="Gemini 遺꾩꽍 ?ㅽ뙣", state="error")
+                status.update(label="Gemini analysis failed", state="error")
                 st.exception(exc)
                 return
 
@@ -1511,29 +1502,28 @@ def main() -> None:
                 "estimated_cost_krw": estimate_cost_krw(usage),
             }
 
-            st.write("6) 결과 JSON Drive 저장")
+            st.write("6) Saving the result JSON to Google Drive")
             out_name = f"analysis_{Path(selected['name']).stem}_{role}.json"
             try:
                 result["result_link"] = upload_json_result(drive, output_folder_id, out_name, result)
             except RefreshError as exc:
                 result["result_link"] = ""
                 result["upload_error"] = str(exc)
-                render_oauth_refresh_error("Drive 결과 저장", exc)
+                render_oauth_refresh_error("Drive result upload", exc)
             except HttpError as exc:
                 result["result_link"] = ""
                 result["upload_error"] = str(exc)
                 st.warning(
-                    "遺꾩꽍? ?꾨즺?먯?留?Drive 寃곌낵 ??μ? ?ㅽ뙣?덉뒿?덈떎. "
-                    "??λ맂 遺꾩꽍 蹂닿린??異쒕젰 ?대뜑??JSON???먮룞 ??λ릺?댁빞 ?숈옉?⑸땲?? "
-                    "Google 濡쒓렇???곌껐 ?곹깭? 異쒕젰 ?대뜑 ?묎렐 沅뚰븳???뺤씤??二쇱꽭??"
+                    "Analysis completed, but Drive upload failed. Saved-report reload only works when the JSON is successfully stored in the output folder. "
+                    "Please check the Google login state and output-folder access."
                 )
 
-            status.update(label="遺꾩꽍 ?꾨즺", state="complete")
+            status.update(label="Analysis complete", state="complete")
         render_report(result, quality, candidates, frame_map, video_bytes)
         return
 
     if not saved_reports:
-        st.info("異쒕젰 ?대뜑????λ맂 遺꾩꽍 JSON???놁뒿?덈떎.")
+        st.info("No saved analysis JSON files were found in the output Drive folder.")
         return
 
     selected_report = st.selectbox("Select Saved Report", options=saved_reports, format_func=lambda item: item["name"])
@@ -1541,36 +1531,22 @@ def main() -> None:
     input_video = report.get("input_video", {})
     source_video = video_by_id.get(input_video.get("id")) or video_by_name.get(input_video.get("name", ""))
     if source_video is None:
-        st.error("?먮낯 ?곸긽???낅젰 ?대뜑?먯꽌 李얠? 紐삵뻽?듬땲?? ??λ맂 JSON留뚯쑝濡쒕뒗 ?곸긽 ?ъ깮??蹂듭썝?????놁뒿?덈떎.")
+        st.error("The original video could not be found in the input Drive folder. The saved JSON alone cannot restore replay playback.")
         st.download_button(
-            "??λ맂 JSON ?ㅼ슫濡쒕뱶",
+            "Download Saved JSON",
             data=json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name=selected_report["name"],
+            file_name=f"{selected_report['name']}",
             mime="application/json",
         )
         return
 
     local_video = download_video(drive, source_video["id"], source_video["name"])
     video_bytes = local_video.read_bytes()
-    quality_data = input_video.get("quality", {})
-    quality = VideoQuality(
-        width=int(quality_data.get("width", 0)),
-        height=int(quality_data.get("height", 0)),
-        fps=float(quality_data.get("fps", 0.0)),
-        duration_sec=float(quality_data.get("duration_sec", 0.0)),
-        grade=str(quality_data.get("grade", "C")),
-        notes=list(quality_data.get("notes", [])),
-    )
+    quality = video_quality_from_report(report)
     candidates = build_candidates_from_result(report)
-    frame_map = collect_candidate_frames(local_video, candidates) if candidates else {}
-
-    if report.get("model_version") != MODEL_NAME:
-        st.warning(f"??寃곌낵??`{report.get('model_version')}` 湲곗? ??λ낯?낅땲?? ?꾩옱 湲곕낯 紐⑤뜽? `{MODEL_NAME}` ?낅땲??")
-
+    frame_map = collect_candidate_frames(local_video, candidates)
     render_report(report, quality, candidates, frame_map, video_bytes)
-
-
-if __name__ == "__main__":
-    main()
+    if report.get("model_version") and report.get("model_version") != MODEL_NAME:
+        st.warning(f"This saved report was generated with `{report.get('model_version')}`. The current default model is `{MODEL_NAME}`.")
 
 
