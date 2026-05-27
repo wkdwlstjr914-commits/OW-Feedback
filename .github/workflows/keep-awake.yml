@@ -1,0 +1,22 @@
+name: Keep Streamlit Awake
+
+on:
+  schedule:
+    - cron: "0 */10 * * *" # 10시간마다 주기적으로 실행
+  workflow_dispatch:
+
+permissions:
+  contents: write # 리포지토리에 푸시할 수 있는 쓰기 권한 필수
+
+jobs:
+  keep-awake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Push empty commit to keep app awake
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep Streamlit app awake"
+          git push
