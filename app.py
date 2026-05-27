@@ -819,6 +819,80 @@ def collect_candidate_frames(video_path: Path, candidates: list[EventCandidate])
     return frame_map
 
 
+def collect_candidate_clips(
+    video_path: Path,
+    candidates: list[EventCandidate],
+    target_width: int = 960,
+    target_fps: float = 12.0,
+) -> dict[str, bytes]:
+    clip_map: dict[str, bytes] = {}
+    probe = cv2.VideoCapture(str(video_path))
+    if not probe.isOpened():
+        return clip_map
+
+    source_width = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    source_height = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    source_fps = float(probe.get(cv2.CAP_PROP_FPS) or 30.0)
+    probe.release()
+
+    if source_width <= 0 or source_height <= 0:
+        return clip_map
+
+    scale = min(1.0, target_width / float(source_width)) if target_width > 0 else 1.0
+    clip_width = max(2, int(round(source_width * scale)))
+    clip_height = max(2, int(round(source_height * scale)))
+    if clip_width % 2:
+        clip_width += 1
+    if clip_height % 2:
+        clip_height += 1
+
+    output_fps = max(6.0, min(target_fps, source_fps if source_fps > 0 else target_fps))
+    frame_skip = max(1, int(round((source_fps or output_fps) / output_fps)))
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+    for candidate in candidates:
+        capture = cv2.VideoCapture(str(video_path))
+        if not capture.isOpened():
+            continue
+        capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, candidate.start_sec) * 1000.0)
+
+        tmp_path: Path | None = None
+        writer: cv2.VideoWriter | None = None
+        frame_index = 0
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+                tmp_path = Path(tmp.name)
+            writer = cv2.VideoWriter(str(tmp_path), fourcc, output_fps, (clip_width, clip_height))
+            if not writer.isOpened():
+                continue
+
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                current_sec = float(capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+                if current_sec > candidate.end_sec + 0.05:
+                    break
+                if frame_index % frame_skip == 0:
+                    if scale != 1.0:
+                        frame = cv2.resize(frame, (clip_width, clip_height), interpolation=cv2.INTER_AREA)
+                    writer.write(frame)
+                frame_index += 1
+        finally:
+            capture.release()
+            if writer is not None:
+                writer.release()
+
+        if tmp_path is None or not tmp_path.exists():
+            continue
+        try:
+            clip_map[candidate.candidate_id] = tmp_path.read_bytes()
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    return clip_map
+
+
 def get_metric_catalog(role: str) -> list[dict[str, Any]]:
     return COMMON_METRICS + ROLE_METRICS[role]
 
@@ -1227,14 +1301,18 @@ def render_detail_panel(
     item: dict[str, Any],
     candidate_map: dict[str, EventCandidate],
     frame_map: dict[str, list[dict[str, Any]]],
-    video_bytes: bytes,
+    clip_map: dict[str, bytes],
 ) -> None:
     candidate = candidate_map[item["candidate_id"]]
     frames = frame_map.get(item["candidate_id"], [])
+    clip_bytes = clip_map.get(item["candidate_id"])
     left, right = st.columns([1.05, 1.25])
     with left:
         st.markdown(f"<div class='detail-panel'><div class='detail-heading'>{title}</div>", unsafe_allow_html=True)
-        st.video(video_bytes, format="video/mp4", start_time=int(candidate.start_sec), end_time=int(candidate.end_sec), muted=True)
+        if clip_bytes:
+            st.video(clip_bytes, format="video/mp4", muted=True)
+        else:
+            st.info(f"{candidate.timestamp} 전후 10초 클립을 준비하지 못해 프레임 근거만 표시합니다.")
         if frames:
             frame_cols = st.columns(len(frames))
             for index, frame in enumerate(frames):
@@ -1262,7 +1340,7 @@ def render_report(
     quality: VideoQuality,
     candidates: list[EventCandidate],
     frame_map: dict[str, list[dict[str, Any]]],
-    video_bytes: bytes,
+    clip_map: dict[str, bytes],
 ) -> None:
     candidate_map = {candidate.candidate_id: candidate for candidate in candidates}
     scores = result["scores"]
@@ -1355,11 +1433,11 @@ def render_report(
 
     st.subheader("잘한 장면")
     for index, item in enumerate([it for it in filtered_items if it["lane"] == "strength"], start=1):
-        render_detail_panel(f"잘한 장면 {index}", item, candidate_map, frame_map, video_bytes)
+        render_detail_panel(f"잘한 장면 {index}", item, candidate_map, frame_map, clip_map)
 
     st.subheader("보완 장면")
     for index, item in enumerate([it for it in filtered_items if it["lane"] == "weakness"], start=1):
-        render_detail_panel(f"보완 장면 {index}", item, candidate_map, frame_map, video_bytes)
+        render_detail_panel(f"보완 장면 {index}", item, candidate_map, frame_map, clip_map)
 
     st.subheader("데스 원인")
     for cause in result.get("death_causes", []):
@@ -1462,7 +1540,6 @@ def main() -> None:
         with st.status("분석 진행 중", expanded=True) as status:
             st.write("1) Google Drive에서 원본 영상을 불러옵니다.")
             local_video = download_video(drive, selected["id"], selected["name"])
-            video_bytes = local_video.read_bytes()
             video_hash = compute_file_hash(local_video)
 
             st.write("2) 입력 영상 품질을 점검합니다.")
@@ -1477,6 +1554,9 @@ def main() -> None:
 
             st.write("4) 후보 구간별 근거 프레임을 추출합니다.")
             frame_map = collect_candidate_frames(local_video, candidates)
+
+            st.write("4-1) 리포트용 10초 클립을 경량 생성합니다.")
+            clip_map = collect_candidate_clips(local_video, candidates)
 
             st.write("5) Gemini 3.5 Flash로 코칭 분석을 수행합니다.")
             try:
@@ -1517,7 +1597,7 @@ def main() -> None:
             st.write("6) 결과 JSON을 다운로드해 직접 저장합니다.")
             status.update(label="분석 완료", state="complete")
 
-        render_report(result, quality, candidates, frame_map, video_bytes)
+        render_report(result, quality, candidates, frame_map, clip_map)
         return
 
     if not saved_reports:
@@ -1539,7 +1619,6 @@ def main() -> None:
         return
 
     local_video = download_video(drive, source_video["id"], source_video["name"])
-    video_bytes = local_video.read_bytes()
     quality_data = input_video.get("quality", {})
     quality = VideoQuality(
         width=int(quality_data.get("width", 0)),
@@ -1551,11 +1630,12 @@ def main() -> None:
     )
     candidates = build_candidates_from_result(report)
     frame_map = collect_candidate_frames(local_video, candidates) if candidates else {}
+    clip_map = collect_candidate_clips(local_video, candidates) if candidates else {}
 
     if report.get("model_version") != MODEL_NAME:
         st.warning(f"이 결과는 `{report.get('model_version')}` 기준으로 저장되었습니다. 현재 기본 모델은 `{MODEL_NAME}` 입니다.")
 
-    render_report(report, quality, candidates, frame_map, video_bytes)
+    render_report(report, quality, candidates, frame_map, clip_map)
 if __name__ == "__main__":
     main()
 
