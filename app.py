@@ -1,10 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import tempfile
 import urllib.parse
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,6 +17,7 @@ import cv2
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -29,7 +32,7 @@ MODEL_LABEL = "Gemini 3.5 Flash"
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 TOKEN_PATH = Path(__file__).resolve().parent / ".streamlit" / "google_oauth_token.json"
 CATEGORY_LABELS = {"aim": "Aim", "move": "Move", "judge": "Judge", "op": "Op"}
-LANE_LABELS = {"strength": "잘한 장면", "weakness": "보완 장면"}
+LANE_LABELS = {"strength": "?섑븳 ?λ㈃", "weakness": "蹂댁셿 ?λ㈃"}
 ROLE_WEIGHTS: dict[str, dict[str, int]] = {
     "tank": {"aim": 10, "move": 20, "judge": 30, "op": 40},
     "dps": {"aim": 40, "move": 20, "judge": 25, "op": 15},
@@ -42,32 +45,32 @@ ROLE_HEROES: dict[str, list[str]] = {
 }
 TIMELINE_COLORS = {"engagement": "#4db6ff", "death": "#ff5d73", "ultimate": "#ffc857", "positioning": "#55e6a5"}
 COMMON_METRICS: list[dict[str, Any]] = [
-    {"key": "tracking_stability", "label": "트래킹 안정성", "category": "aim", "group": "common", "score_weight": 12},
-    {"key": "aim_mobility_range", "label": "에임 가동 범위", "category": "aim", "group": "common", "score_weight": 8},
-    {"key": "combat_cover_rate", "label": "교전 엄폐율", "category": "move", "group": "common", "score_weight": 10},
-    {"key": "meaningless_jump_rate", "label": "무의미한 점프 빈도", "category": "move", "group": "common", "score_weight": 5},
-    {"key": "scan_frequency", "label": "정보 스캔 빈도", "category": "judge", "group": "common", "score_weight": 8},
-    {"key": "regroup_discipline", "label": "리그룹 이행률", "category": "op", "group": "common", "score_weight": 7},
-    {"key": "fight_tempo_discipline", "label": "교전 템포 운영", "category": "op", "group": "common", "score_weight": 10},
+    {"key": "tracking_stability", "label": "Tracking Stability", "category": "aim", "group": "common", "score_weight": 12},
+    {"key": "aim_mobility_range", "label": "Aim Mobility Range", "category": "aim", "group": "common", "score_weight": 8},
+    {"key": "combat_cover_rate", "label": "Combat Cover Rate", "category": "move", "group": "common", "score_weight": 10},
+    {"key": "meaningless_jump_rate", "label": "Meaningless Jump Rate", "category": "move", "group": "common", "score_weight": 5},
+    {"key": "scan_frequency", "label": "Scan Frequency", "category": "judge", "group": "common", "score_weight": 8},
+    {"key": "regroup_discipline", "label": "Regroup Discipline", "category": "op", "group": "common", "score_weight": 7},
+    {"key": "fight_tempo_discipline", "label": "Fight Tempo Discipline", "category": "op", "group": "common", "score_weight": 10},
 ]
 ROLE_METRICS: dict[str, list[dict[str, Any]]] = {
     "dps": [
-        {"key": "target_focus_priority", "label": "타겟 포커싱 우선순위", "category": "op", "group": "role", "score_weight": 12},
-        {"key": "side_angle_occupancy", "label": "사이드(양각) 점유율", "category": "judge", "group": "role", "score_weight": 10},
-        {"key": "effective_range_tempo", "label": "유효 사거리 템포", "category": "judge", "group": "role", "score_weight": 6},
-        {"key": "ultimate_investment_efficiency", "label": "궁극기 투자 효율", "category": "op", "group": "role", "score_weight": 12},
+        {"key": "target_focus_priority", "label": "Target Focus Priority", "category": "op", "group": "role", "score_weight": 12},
+        {"key": "side_angle_occupancy", "label": "Side Angle Occupancy", "category": "judge", "group": "role", "score_weight": 10},
+        {"key": "effective_range_tempo", "label": "Effective Range Tempo", "category": "judge", "group": "role", "score_weight": 6},
+        {"key": "ultimate_investment_efficiency", "label": "Ultimate Investment Efficiency", "category": "op", "group": "role", "score_weight": 12},
     ],
     "tank": [
-        {"key": "choke_control", "label": "길목 장악력", "category": "op", "group": "role", "score_weight": 14},
-        {"key": "prefight_resource_preservation", "label": "교전 전 자원 보존율", "category": "op", "group": "role", "score_weight": 8},
-        {"key": "skill_counted_entry", "label": "스킬 카운팅 진입", "category": "judge", "group": "role", "score_weight": 8},
-        {"key": "aggro_pingpong_survival", "label": "어그로 핑퐁 생존", "category": "move", "group": "role", "score_weight": 10},
+        {"key": "choke_control", "label": "Choke Control", "category": "op", "group": "role", "score_weight": 14},
+        {"key": "prefight_resource_preservation", "label": "Prefight Resource Preservation", "category": "op", "group": "role", "score_weight": 8},
+        {"key": "skill_counted_entry", "label": "Skill Counted Entry", "category": "judge", "group": "role", "score_weight": 8},
+        {"key": "aggro_pingpong_survival", "label": "Aggro Pingpong Survival", "category": "move", "group": "role", "score_weight": 10},
     ],
     "support": [
-        {"key": "heal_damage_tempo_shift", "label": "공수 전환 템포", "category": "judge", "group": "role", "score_weight": 8},
-        {"key": "critical_ally_reaction", "label": "치명상 반응 속도", "category": "move", "group": "role", "score_weight": 10},
-        {"key": "self_survival_cooldown_preservation", "label": "생존기 보존 시간", "category": "op", "group": "role", "score_weight": 10},
-        {"key": "survival_line_maintenance", "label": "생존 한계선 유지율", "category": "judge", "group": "role", "score_weight": 12},
+        {"key": "heal_damage_tempo_shift", "label": "Heal-Damage Tempo Shift", "category": "judge", "group": "role", "score_weight": 8},
+        {"key": "critical_ally_reaction", "label": "Critical Ally Reaction", "category": "move", "group": "role", "score_weight": 10},
+        {"key": "self_survival_cooldown_preservation", "label": "Self Survival Cooldown Preservation", "category": "op", "group": "role", "score_weight": 10},
+        {"key": "survival_line_maintenance", "label": "Survival Line Maintenance", "category": "judge", "group": "role", "score_weight": 12},
     ],
 }
 
@@ -115,7 +118,7 @@ def format_enemy_comp_read(enemy_comp: dict[str, Any]) -> str:
 
 
 def render_enemy_comp_context(context: str) -> str:
-    return f"<p><b>적 조합 반영</b><br>{context}</p>" if context else ""
+    return f"<p><b>??議고빀 諛섏쁺</b><br>{context}</p>" if context else ""
 
 
 def inject_css() -> None:
@@ -344,7 +347,7 @@ def render_header() -> None:
         <div class="ow-header">
             <div class="ow-kicker">AI Replay Review</div>
             <div class="ow-title">Overwatch AI Coach MVP</div>
-            <div class="ow-subtitle">좋은 장면과 보완 장면을 분리해서, 근거 프레임과 재생 구간까지 한 번에 복기하는 HUD형 코칭 대시보드</div>
+            <div class="ow-subtitle">醫뗭? ?λ㈃怨?蹂댁셿 ?λ㈃??遺꾨━?댁꽌, 洹쇨굅 ?꾨젅?꾧낵 ?ъ깮 援ш컙源뚯? ??踰덉뿉 蹂듦린?섎뒗 HUD??肄붿묶 ??쒕낫??/div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -385,6 +388,97 @@ def get_oauth_token_secret() -> str:
     return get_secret("GOOGLE_OAUTH_TOKEN_JSON")
 
 
+def get_oauth_token_scopes() -> list[str]:
+    raw = get_oauth_token_secret().strip()
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    scopes = payload.get("scopes", [])
+    if isinstance(scopes, list):
+        return [str(scope) for scope in scopes]
+    if isinstance(scopes, str):
+        return [scopes]
+    return []
+
+
+def token_secret_has_drive_scope() -> bool:
+    return any(scope == DRIVE_SCOPES[0] for scope in get_oauth_token_scopes())
+
+
+def token_secret_is_readonly_drive() -> bool:
+    scopes = set(get_oauth_token_scopes())
+    return "https://www.googleapis.com/auth/drive.readonly" in scopes and DRIVE_SCOPES[0] not in scopes
+
+
+def is_cloud_runtime() -> bool:
+    return bool(os.environ.get("STREAMLIT_SHARING_MODE")) or Path(__file__).as_posix().startswith("/mount/src/")
+
+
+def extract_http_error_details(exc: HttpError) -> tuple[int | None, str, str]:
+    status_code = getattr(getattr(exc, "resp", None), "status", None)
+    reason = ""
+    message = str(exc)
+    content = getattr(exc, "content", b"")
+    if not content:
+        return status_code, reason, message
+    try:
+        payload = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return status_code, reason, message
+    error_payload = payload.get("error", {})
+    if isinstance(error_payload, dict):
+        message = str(error_payload.get("message") or message)
+        errors = error_payload.get("errors", [])
+        if isinstance(errors, list) and errors:
+            first = errors[0]
+            if isinstance(first, dict):
+                reason = str(first.get("reason") or "")
+    return status_code, reason, message
+
+
+def render_drive_http_error(context_label: str, folder_id: str, exc: HttpError) -> None:
+    status_code, reason, message = extract_http_error_details(exc)
+    normalized_folder_id = normalize_drive_folder_id(folder_id)
+
+    st.error(f"{context_label}???ㅽ뙣?덉뒿?덈떎. Google Drive ?묎렐 ?ㅼ젙???뺤씤?댁＜?몄슂.")
+    st.caption(f"?붿껌 ?대뜑 ID: `{normalized_folder_id}`")
+    if status_code:
+        st.caption(f"Google Drive ?묐떟 肄붾뱶: `{status_code}`")
+    if reason:
+        st.caption(f"Google Drive reason: `{reason}`")
+    st.caption(f"?ㅻ쪟 硫붿떆吏: `{message}`")
+
+    hints: list[str] = []
+    if status_code == 404 or reason == "notFound":
+        hints.append("?대뜑 ID ?먮뒗 ?대뜑 URL???섎せ?섏뿀嫄곕굹, ?대떦 ?대뜑媛 ?꾩옱 濡쒓렇?명븳 Google 怨꾩젙 Drive?먯꽌 蹂댁씠吏 ?딆뒿?덈떎.")
+    if status_code == 401 or reason in {"authError", "invalidCredentials"}:
+        hints.append("OAuth ?좏겙??留뚮즺?섏뿀嫄곕굹 ?섎せ?섏뿀?듬땲?? 濡쒖뺄?먯꽌 ?ㅼ떆 濡쒓렇?명빐 ???좏겙 JSON??留뚮뱾??諛고룷 ?쒗겕由우뿉 ?ｌ뼱二쇱꽭??")
+    if status_code == 403 or reason in {"insufficientPermissions", "forbidden", "insufficientFilePermissions"}:
+        if not token_secret_has_drive_scope():
+            hints.append("?꾩옱 OAuth ?좏겙 JSON??Google Drive 踰붿쐞媛 ?놁뒿?덈떎. Drive 沅뚰븳?쇰줈 ?ㅼ떆 濡쒓렇?명빐 ???좏겙??諛쒓툒?댁빞 ?⑸땲??")
+        else:
+            hints.append("?꾩옱 濡쒓렇?명븳 Google 怨꾩젙?????대뜑 ?묎렐 沅뚰븳???녾굅?? 怨듭쑀 ?쒕씪?대툕/媛쒖씤 ?쒕씪?대툕 沅뚰븳??遺議깊빀?덈떎.")
+    if not hints:
+        hints.append("諛고룷 Secrets???대뜑 ID, OAuth ?대씪?댁뼵??JSON, OAuth ?좏겙 JSON???쒕줈 媛숈? Google 怨꾩젙 湲곗??몄? ?뺤씤?댁＜?몄슂.")
+    for hint in hints:
+        st.write(f"- {hint}")
+
+
+def render_oauth_refresh_error(context_label: str, exc: RefreshError) -> None:
+    st.error(f"{context_label} 중 Google OAuth 토큰 갱신에 실패했습니다.")
+    st.caption(f"오류 메시지: `{exc}`")
+    st.write("- 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`이 만료되었거나 폐기되었을 수 있습니다.")
+    st.write("- Google OAuth 앱이 `Testing` 상태라면 refresh token이 며칠 후 자동 만료될 수 있습니다.")
+    if token_secret_is_readonly_drive():
+        st.write("- 현재 토큰은 `drive.readonly`만 포함하고 있어 Drive 업로드를 할 수 없습니다. `https://www.googleapis.com/auth/drive` 권한으로 다시 발급해야 합니다.")
+    else:
+        st.write("- 새 토큰 JSON에는 `https://www.googleapis.com/auth/drive` scope와 유효한 `refresh_token`이 포함되어야 합니다.")
+    st.write("- 로컬에서 다시 로그인해 새 토큰을 발급한 뒤, 그 JSON 전체를 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`에 다시 넣어주세요.")
+
+
 def load_oauth_credentials() -> Credentials | None:
     token_secret = get_oauth_token_secret()
     if token_secret:
@@ -395,6 +489,8 @@ def load_oauth_credentials() -> Credentials | None:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
+            except RefreshError:
+                raise
             except Exception:
                 return None
         if creds and creds.valid:
@@ -409,6 +505,8 @@ def load_oauth_credentials() -> Credentials | None:
         try:
             creds.refresh(Request())
             save_oauth_credentials(creds)
+        except RefreshError:
+            raise
         except Exception:
             return None
     return creds if creds and creds.valid else None
@@ -431,31 +529,54 @@ def clear_oauth_credentials() -> None:
 def authorize_drive_oauth() -> None:
     config = get_oauth_client_config()
     if not config:
-        st.error("`GOOGLE_OAUTH_CLIENT_JSON` 시크릿이 필요합니다.")
+        st.error("`GOOGLE_OAUTH_CLIENT_JSON` ?쒗겕由우씠 ?꾩슂?⑸땲??")
         st.stop()
     flow = InstalledAppFlow.from_client_config(config, DRIVE_SCOPES)
-    creds = flow.run_local_server(host="localhost", port=0, open_browser=True)
+    try:
+        creds = flow.run_local_server(host="localhost", port=0, open_browser=True)
+    except webbrowser.Error:
+        st.error("배포된 Streamlit 앱에서는 로컬 브라우저 OAuth 로그인을 직접 열 수 없습니다.")
+        st.write("- 이 버튼은 로컬 PC에서만 사용 가능합니다.")
+        st.write("- 로컬에서 로그인해 새 `token.json`을 만든 뒤, 그 내용을 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`에 넣어주세요.")
+        st.stop()
     save_oauth_credentials(creds)
 
 
 def get_drive_service():
     config = get_oauth_client_config()
     if not config:
-        st.error("`GOOGLE_OAUTH_CLIENT_JSON` 시크릿이 없습니다. OAuth 클라이언트 JSON을 추가해야 Google Drive 자동 저장이 동작합니다.")
+        st.error("`GOOGLE_OAUTH_CLIENT_JSON` ?쒗겕由우씠 ?놁뒿?덈떎. OAuth ?대씪?댁뼵??JSON??異붽??댁빞 Google Drive ?먮룞 ??μ씠 ?숈옉?⑸땲??")
         st.stop()
 
-    creds = load_oauth_credentials()
+    if get_oauth_token_secret().strip() and not token_secret_has_drive_scope():
+        st.error("諛고룷??OAuth ?좏겙 JSON??Google Drive 沅뚰븳???놁뒿?덈떎.")
+        st.write("- 濡쒖뺄?먯꽌 ???깆쑝濡??ㅼ떆 Google 濡쒓렇?명빐 ???좏겙??諛쒓툒?섏꽭??")
+        st.write("- ???좏겙 JSON??`scopes`??`https://www.googleapis.com/auth/drive`媛 ?ы븿?섏뼱???⑸땲??")
+        st.write("- 洹?媛믪쓣 諛고룷 Secrets??`GOOGLE_OAUTH_TOKEN_JSON`???ㅼ떆 ?ｌ뼱二쇱꽭??")
+        st.stop()
+
+    try:
+        creds = load_oauth_credentials()
+    except RefreshError as exc:
+        render_oauth_refresh_error("Google Drive 연결 준비", exc)
+        st.stop()
     if not creds:
-        st.warning("Google Drive 자동 저장과 저장본 불러오기를 위해 Google 로그인 연결이 필요합니다.")
-        connect_col, reset_col = st.columns(2)
-        with connect_col:
-            if st.button("Google Drive 로그인 연결", type="primary"):
-                authorize_drive_oauth()
-                st.rerun()
-        with reset_col:
-            if st.button("저장된 로그인 초기화"):
-                clear_oauth_credentials()
-                st.rerun()
+        if is_cloud_runtime():
+            st.error("배포된 앱에는 유효한 Drive OAuth 토큰이 아직 없습니다.")
+            st.write("- Streamlit Cloud에서는 로컬 브라우저 OAuth 로그인을 직접 실행할 수 없습니다.")
+            st.write("- 로컬 PC에서 이 앱으로 Google 로그인 후 새 `token.json`을 만드세요.")
+            st.write("- 그 JSON 전체를 배포 Secrets의 `GOOGLE_OAUTH_TOKEN_JSON`에 붙여넣으면 됩니다.")
+        else:
+            st.warning("Google Drive ?먮룞 ??κ낵 ??λ낯 遺덈윭?ㅺ린瑜??꾪빐 Google 濡쒓렇???곌껐???꾩슂?⑸땲??")
+            connect_col, reset_col = st.columns(2)
+            with connect_col:
+                if st.button("Google Drive 濡쒓렇???곌껐", type="primary"):
+                    authorize_drive_oauth()
+                    st.rerun()
+            with reset_col:
+                if st.button("저장된 로그인 초기화"):
+                    clear_oauth_credentials()
+                    st.rerun()
         st.stop()
 
     return build("drive", "v3", credentials=creds)
@@ -559,7 +680,7 @@ def compute_file_hash(video_path: Path) -> str:
 def probe_video(video_path: Path) -> VideoQuality:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return VideoQuality(0, 0, 0.0, 0.0, "C", ["비디오를 열 수 없습니다."])
+        return VideoQuality(0, 0, 0.0, 0.0, "C", ["鍮꾨뵒?ㅻ? ?????놁뒿?덈떎."])
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -573,18 +694,18 @@ def probe_video(video_path: Path) -> VideoQuality:
     if width >= 1920 and height >= 1080:
         score += 2
     else:
-        notes.append("권장 해상도(1080p)보다 낮습니다.")
+        notes.append("沅뚯옣 ?댁긽??1080p)蹂대떎 ??뒿?덈떎.")
     if fps >= 50:
         score += 2
     elif fps >= 30:
         score += 1
-        notes.append("60fps 권장 대비 낮아 에임 분석 정밀도가 떨어질 수 있습니다.")
+        notes.append("60fps 沅뚯옣 ?鍮???븘 ?먯엫 遺꾩꽍 ?뺣??꾧? ?⑥뼱吏????덉뒿?덈떎.")
     else:
-        notes.append("fps가 낮아 분석 신뢰도가 크게 떨어질 수 있습니다.")
+        notes.append("fps媛 ??븘 遺꾩꽍 ?좊ː?꾧? ?ш쾶 ?⑥뼱吏????덉뒿?덈떎.")
     if duration >= 180:
         score += 1
     else:
-        notes.append("영상 길이가 짧아 상황 다양성이 부족할 수 있습니다.")
+        notes.append("?곸긽 湲몄씠媛 吏㏃븘 ?곹솴 ?ㅼ뼇?깆씠 遺議깊븷 ???덉뒿?덈떎.")
 
     grade = "A" if score >= 4 else "B" if score >= 2 else "C"
     return VideoQuality(width, height, fps, duration, grade, notes)
@@ -1126,13 +1247,13 @@ def render_detail_panel(
             f"""
             <div class='detail-panel'>
                 <div class='detail-heading'>{item['timestamp']} | {item['metric_name']}</div>
-                <p><b>장면 요약</b><br>{item['summary']}</p>
-                <p><b>평가 근거</b><br>{item['evaluation_basis']}</p>
-                <p><b>피드백 방향</b><br>{item['feedback_direction']}</p>
-                <p><b>원인 1</b><br>{item['primary_cause']}</p>
-                <p><b>원인 2</b><br>{item['secondary_cause']}</p>
-                <p><b>실행 루틴</b><br>{item['action_item']}</p>
-                <p><b>신뢰도</b><br>{item['confidence']}</p>
+                <p><b>?λ㈃ ?붿빟</b><br>{item['summary']}</p>
+                <p><b>?됯? 洹쇨굅</b><br>{item['evaluation_basis']}</p>
+                <p><b>?쇰뱶諛?諛⑺뼢</b><br>{item['feedback_direction']}</p>
+                <p><b>?먯씤 1</b><br>{item['primary_cause']}</p>
+                <p><b>?먯씤 2</b><br>{item['secondary_cause']}</p>
+                <p><b>?ㅽ뻾 猷⑦떞</b><br>{item['action_item']}</p>
+                <p><b>?좊ː??/b><br>{item['confidence']}</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1163,16 +1284,16 @@ def render_report(
     with cost_col:
         render_stat_card("Estimated Cost", f"{estimate_krw:,.0f} KRW", f"in={usage.get('prompt_token_count', 0)} / out={usage.get('candidates_token_count', 0)}")
     with time_col:
-        render_stat_card("Score Split", f"{score_groups.get('common_60', 0)} + {score_groups.get('role_40', 0)}", "공통 60점 + 포지션 특화 40점")
+        render_stat_card("Score Split", f"{score_groups.get('common_60', 0)} + {score_groups.get('role_40', 0)}", "Common 60 + Role 40")
 
     chart_col, meta_col = st.columns([1.0, 1.1])
     with chart_col:
         st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
         st.plotly_chart(build_radar_chart(scores), use_container_width=True)
     with meta_col:
-        st.markdown("<div class='ow-card'><div class='ow-card-title'>상태 메타</div>", unsafe_allow_html=True)
+        st.markdown("<div class='ow-card'><div class='ow-card-title'>?곹깭 硫뷀?</div>", unsafe_allow_html=True)
         st.markdown(
-            f"**영상 길이**  \n{quality.duration_sec / 60:.1f} min  \n**해상도**  \n{quality.width}x{quality.height} / {quality.fps:.1f}fps"
+            f"**?곸긽 湲몄씠**  \n{quality.duration_sec / 60:.1f} min  \n**?댁긽??*  \n{quality.width}x{quality.height} / {quality.fps:.1f}fps"
         )
         st.markdown("</div>", unsafe_allow_html=True)
     enemy_comp_read = result.get("enemy_comp_read", {})
@@ -1187,22 +1308,22 @@ def render_report(
             """,
             unsafe_allow_html=True,
         )
-    st.subheader("공통 지표 60점")
+    st.subheader("Common Metrics 60")
     for metric in [result["metrics"][item["key"]] for item in COMMON_METRICS]:
         st.markdown(
             f"""
             <div class="ow-card">
                 <div class="ow-card-title">{metric['label']}</div>
-                <div><b>점수</b> {metric.get('score', 0)} / 가중치 {metric.get('score_weight', 0)}</div>
-                <div><b>평가 방식</b><br>{metric.get('evaluation', '-')}</div>
-                <div style="margin-top:0.35rem;"><b>피드백 방향</b><br>{metric.get('feedback_direction', '-')}</div>
-                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | 낮은 신뢰도 이유: {metric.get('low_confidence_reason', '') or '-'}</div>
+                <div><b>?먯닔</b> {metric.get('score', 0)} / 媛以묒튂 {metric.get('score_weight', 0)}</div>
+                <div><b>?됯? 諛⑹떇</b><br>{metric.get('evaluation', '-')}</div>
+                <div style="margin-top:0.35rem;"><b>?쇰뱶諛?諛⑺뼢</b><br>{metric.get('feedback_direction', '-')}</div>
+                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | ??? ?좊ː???댁쑀: {metric.get('low_confidence_reason', '') or '-'}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    st.subheader("포지션 특화 40점")
+    st.subheader("Role Metrics 40")
     role_metric_defs = ROLE_METRICS[result["meta"]["role"].lower()]
     for item in role_metric_defs:
         metric = result["metrics"][item["key"]]
@@ -1210,45 +1331,45 @@ def render_report(
             f"""
             <div class="ow-card">
                 <div class="ow-card-title">{metric['label']}</div>
-                <div><b>점수</b> {metric.get('score', 0)} / 가중치 {metric.get('score_weight', 0)}</div>
-                <div><b>평가 방식</b><br>{metric.get('evaluation', '-')}</div>
-                <div style="margin-top:0.35rem;"><b>피드백 방향</b><br>{metric.get('feedback_direction', '-')}</div>
-                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | 낮은 신뢰도 이유: {metric.get('low_confidence_reason', '') or '-'}</div>
+                <div><b>?먯닔</b> {metric.get('score', 0)} / 媛以묒튂 {metric.get('score_weight', 0)}</div>
+                <div><b>?됯? 諛⑹떇</b><br>{metric.get('evaluation', '-')}</div>
+                <div style="margin-top:0.35rem;"><b>?쇰뱶諛?諛⑺뼢</b><br>{metric.get('feedback_direction', '-')}</div>
+                <div class="ow-meta">confidence={metric.get('confidence', 0.0)} | ??? ?좊ː???댁쑀: {metric.get('low_confidence_reason', '') or '-'}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    st.subheader("이벤트 타임라인")
+    st.subheader("Event Timeline")
     filter_left, filter_mid, filter_right = st.columns(3)
-    lane_filter = filter_left.multiselect("피드백 타입", options=["strength", "weakness"], default=["strength", "weakness"], format_func=lambda value: LANE_LABELS[value], key="lane_filter")
-    category_filter = filter_mid.multiselect("평가 영역", options=["aim", "move", "judge", "op"], default=["aim", "move", "judge", "op"], key="category_filter")
-    event_filter = filter_right.multiselect("이벤트 유형", options=["engagement", "death", "ultimate", "positioning"], default=["engagement", "death", "ultimate", "positioning"], key="event_filter")
+    lane_filter = filter_left.multiselect("Feedback Lane", options=["strength", "weakness"], default=["strength", "weakness"], format_func=lambda value: LANE_LABELS[value], key="lane_filter")
+    category_filter = filter_mid.multiselect("Category", options=["aim", "move", "judge", "op"], default=["aim", "move", "judge", "op"], key="category_filter")
+    event_filter = filter_right.multiselect("Event Type", options=["engagement", "death", "ultimate", "positioning"], default=["engagement", "death", "ultimate", "positioning"], key="event_filter")
 
     filtered_items = [
         item for item in timeline_items if item["lane"] in lane_filter and item["category"] in category_filter and item["event_type"] in event_filter
     ]
     if not filtered_items:
-        st.info("현재 필터에 맞는 이벤트가 없습니다.")
+        st.info("?꾩옱 ?꾪꽣??留욌뒗 ?대깽?멸? ?놁뒿?덈떎.")
     for item in filtered_items:
         render_timeline_item(item)
 
-    st.subheader("잘한 장면")
+    st.subheader("?섑븳 ?λ㈃")
     for index, item in enumerate([it for it in filtered_items if it["lane"] == "strength"], start=1):
         render_detail_panel(f"Strength {index}", item, candidate_map, frame_map, video_bytes)
 
-    st.subheader("보완 장면")
+    st.subheader("蹂댁셿 ?λ㈃")
     for index, item in enumerate([it for it in filtered_items if it["lane"] == "weakness"], start=1):
         render_detail_panel(f"Weakness {index}", item, candidate_map, frame_map, video_bytes)
 
-    st.subheader("데스 원인")
+    st.subheader("?곗뒪 ?먯씤")
     for cause in result.get("death_causes", []):
         st.markdown(
             f"""
             <div class="ow-card">
                 <div class="ow-card-title">{cause['timestamp']} | Death Cause</div>
-                <div><b>주원인</b><br>{cause['primary']}</div>
-                <div style="margin-top:0.45rem;"><b>보조원인</b><br>{cause['secondary']}</div>
+                <div><b>二쇱썝??/b><br>{cause['primary']}</div>
+                <div style="margin-top:0.45rem;"><b>蹂댁“?먯씤</b><br>{cause['secondary']}</div>
                 <div class="ow-meta">candidate={cause['candidate_id']} / confidence={cause['confidence']}</div>
             </div>
             """,
@@ -1256,19 +1377,19 @@ def render_report(
         )
 
     if result.get("recommended_focus"):
-        st.subheader("우선 개선 과제")
+        st.subheader("?곗꽑 媛쒖꽑 怨쇱젣")
         for focus in result["recommended_focus"]:
             st.markdown(f"- {focus}")
 
     if result.get("recommended_focus_guides"):
-        st.subheader("개선 설명 가이드")
+        st.subheader("媛쒖꽑 ?ㅻ챸 媛?대뱶")
         for guide in result["recommended_focus_guides"]:
             st.markdown(
                 f"""
                 <div class="ow-card">
                     <div class="ow-card-title">{guide.get('title', '-')}</div>
-                    <div><b>왜 중요한가</b><br>{guide.get('why_it_matters', '-')}</div>
-                    <div style="margin-top:0.45rem;"><b>다음 교전 적용법</b><br>{guide.get('how_to_apply', '-')}</div>
+                    <div><b>??以묒슂?쒓?</b><br>{guide.get('why_it_matters', '-')}</div>
+                    <div style="margin-top:0.45rem;"><b>?ㅼ쓬 援먯쟾 ?곸슜踰?/b><br>{guide.get('how_to_apply', '-')}</div>
                     {render_enemy_comp_context(guide.get('enemy_comp_context', ''))}
                 </div>
                 """,
@@ -1276,12 +1397,12 @@ def render_report(
             )
 
     if result.get("result_link"):
-        st.success(f"결과 JSON 저장 완료: {result['result_link']}")
+        st.success(f"寃곌낵 JSON ????꾨즺: {result['result_link']}")
     elif result.get("upload_error"):
-        st.info("Drive 저장 없이 화면 결과와 JSON 다운로드는 계속 사용할 수 있습니다.")
+        st.info("Drive ????놁씠 ?붾㈃ 寃곌낵? JSON ?ㅼ슫濡쒕뱶??怨꾩냽 ?ъ슜?????덉뒿?덈떎.")
 
     st.download_button(
-        "결과 JSON 다운로드",
+        "寃곌낵 JSON ?ㅼ슫濡쒕뱶",
         data=json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8"),
         file_name=f"analysis_{result.get('input_video', {}).get('name', 'report')}.json",
         mime="application/json",
@@ -1296,59 +1417,67 @@ def main() -> None:
     output_folder_id = get_secret("DRIVE_OUTPUT_FOLDER_ID")
     gemini_api_key = get_secret("GEMINI_API_KEY")
     if not input_folder_id or not output_folder_id or not gemini_api_key:
-        st.warning("시크릿이 비어 있습니다. README의 secrets 예시를 채워주세요.")
+        st.warning("?쒗겕由우씠 鍮꾩뼱 ?덉뒿?덈떎. README??secrets ?덉떆瑜?梨꾩썙二쇱꽭??")
         st.stop()
 
     drive = get_drive_service()
-    videos = list_videos(drive, input_folder_id)
-    if not videos:
-        st.info("입력 폴더에 분석 가능한 비디오가 없습니다.")
+    try:
+        videos = list_videos(drive, input_folder_id)
+    except HttpError as exc:
+        render_drive_http_error("입력 폴더 영상 목록 조회", input_folder_id, exc)
         st.stop()
-    saved_reports = list_saved_reports(drive, output_folder_id)
+    if not videos:
+        st.info("?낅젰 ?대뜑??遺꾩꽍 媛?ν븳 鍮꾨뵒?ㅺ? ?놁뒿?덈떎.")
+        st.stop()
+    try:
+        saved_reports = list_saved_reports(drive, output_folder_id)
+    except HttpError as exc:
+        render_drive_http_error("출력 폴더 저장 결과 조회", output_folder_id, exc)
+        saved_reports = []
     weekly_report_count = count_reports_this_kst_week(saved_reports)
 
     usage_col, saved_col = st.columns(2)
     with usage_col:
-        render_stat_card("KST Weekly Analyses", str(weekly_report_count), "한국시간 월요일 00:00 기준 이번 주 저장 성공 횟수")
+        render_stat_card("KST Weekly Analyses", str(weekly_report_count), "?쒓뎅?쒓컙 ?붿슂??00:00 湲곗? ?대쾲 二?????깃났 ?잛닔")
     with saved_col:
-        render_stat_card("Saved Reports", str(len(saved_reports)), "출력 폴더에 자동 저장된 분석 JSON 수")
+        render_stat_card("Saved Reports", str(len(saved_reports)), "JSON reports saved in the output Drive folder")
 
     video_by_id = {video["id"]: video for video in videos}
     video_by_name = {video["name"]: video for video in videos}
-    mode = st.radio("작업 모드", options=["새 분석", "저장된 분석 보기"], horizontal=True)
+    mode = st.radio("?묒뾽 紐⑤뱶", options=["??遺꾩꽍", "??λ맂 遺꾩꽍 蹂닿린"], horizontal=True)
 
-    if mode == "새 분석":
+    if mode == "??遺꾩꽍":
         top_left, top_right, top_third = st.columns([1.6, 1.0, 1.0])
         with top_left:
-            selected = st.selectbox("분석할 영상을 선택하세요", options=videos, format_func=lambda item: item["name"])
+            selected = st.selectbox("Select Video", options=videos, format_func=lambda item: item["name"])
         with top_right:
-            role = st.selectbox("역할", ["tank", "dps", "support"])
+            role = st.selectbox("Role", ["tank", "dps", "support"])
         with top_third:
-            hero = st.selectbox("영웅", ROLE_HEROES[role])
+            hero = st.selectbox("Hero", ROLE_HEROES[role])
 
-        if not st.button("분석 시작", type="primary"):
+        if not st.button("Start Analysis", type="primary"):
             return
 
         with st.status("분석 진행 중", expanded=True) as status:
-            st.write("1) Drive에서 영상 다운로드")
+            st.write("1) Drive?먯꽌 ?곸긽 ?ㅼ슫濡쒕뱶")
             local_video = download_video(drive, selected["id"], selected["name"])
             video_bytes = local_video.read_bytes()
             video_hash = compute_file_hash(local_video)
 
-            st.write("2) 입력 품질 점검")
+            st.write("2) ?낅젰 ?덉쭏 ?먭?")
             quality = probe_video(local_video)
 
-            st.write("3) 이벤트 후보 구간 수집")
+            st.write("3) ?대깽???꾨낫 援ш컙 ?섏쭛")
             candidates = detect_event_candidates(local_video)
             if not candidates:
-                status.update(label="이벤트 후보 추출 실패", state="error")
-                st.error("이벤트 후보 구간을 찾지 못했습니다.")
+                status.update(label="?대깽???꾨낫 異붿텧 ?ㅽ뙣", state="error")
+                st.error("?대깽???꾨낫 援ш컙??李얠? 紐삵뻽?듬땲??")
                 return
 
-            st.write("4) 후보 구간별 프레임 추출")
+            st.write("4) ?꾨낫 援ш컙蹂??꾨젅??異붿텧")
             frame_map = collect_candidate_frames(local_video, candidates)
 
-            st.write("5) Gemini 3.5 Flash 분석")
+            st.write("5) Gemini 3.5 Flash 遺꾩꽍")
             try:
                 result, usage = gemini_analyze(
                     api_key=gemini_api_key,
@@ -1360,7 +1489,7 @@ def main() -> None:
                     video_hash=video_hash,
                 )
             except Exception as exc:
-                status.update(label="Gemini 분석 실패", state="error")
+                status.update(label="Gemini 遺꾩꽍 ?ㅽ뙣", state="error")
                 st.exception(exc)
                 return
 
@@ -1386,31 +1515,35 @@ def main() -> None:
             out_name = f"analysis_{Path(selected['name']).stem}_{role}.json"
             try:
                 result["result_link"] = upload_json_result(drive, output_folder_id, out_name, result)
+            except RefreshError as exc:
+                result["result_link"] = ""
+                result["upload_error"] = str(exc)
+                render_oauth_refresh_error("Drive 결과 저장", exc)
             except HttpError as exc:
                 result["result_link"] = ""
                 result["upload_error"] = str(exc)
                 st.warning(
-                    "분석은 완료됐지만 Drive 결과 저장은 실패했습니다. "
-                    "저장된 분석 보기는 출력 폴더에 JSON이 자동 저장되어야 동작합니다. "
-                    "Google 로그인 연결 상태와 출력 폴더 접근 권한을 확인해 주세요."
+                    "遺꾩꽍? ?꾨즺?먯?留?Drive 寃곌낵 ??μ? ?ㅽ뙣?덉뒿?덈떎. "
+                    "??λ맂 遺꾩꽍 蹂닿린??異쒕젰 ?대뜑??JSON???먮룞 ??λ릺?댁빞 ?숈옉?⑸땲?? "
+                    "Google 濡쒓렇???곌껐 ?곹깭? 異쒕젰 ?대뜑 ?묎렐 沅뚰븳???뺤씤??二쇱꽭??"
                 )
 
-            status.update(label="분석 완료", state="complete")
+            status.update(label="遺꾩꽍 ?꾨즺", state="complete")
         render_report(result, quality, candidates, frame_map, video_bytes)
         return
 
     if not saved_reports:
-        st.info("출력 폴더에 저장된 분석 JSON이 없습니다.")
+        st.info("異쒕젰 ?대뜑????λ맂 遺꾩꽍 JSON???놁뒿?덈떎.")
         return
 
-    selected_report = st.selectbox("불러올 분석 결과를 선택하세요", options=saved_reports, format_func=lambda item: item["name"])
+    selected_report = st.selectbox("Select Saved Report", options=saved_reports, format_func=lambda item: item["name"])
     report = download_json_file(drive, selected_report["id"])
     input_video = report.get("input_video", {})
     source_video = video_by_id.get(input_video.get("id")) or video_by_name.get(input_video.get("name", ""))
     if source_video is None:
-        st.error("원본 영상을 입력 폴더에서 찾지 못했습니다. 저장된 JSON만으로는 영상 재생을 복원할 수 없습니다.")
+        st.error("?먮낯 ?곸긽???낅젰 ?대뜑?먯꽌 李얠? 紐삵뻽?듬땲?? ??λ맂 JSON留뚯쑝濡쒕뒗 ?곸긽 ?ъ깮??蹂듭썝?????놁뒿?덈떎.")
         st.download_button(
-            "저장된 JSON 다운로드",
+            "??λ맂 JSON ?ㅼ슫濡쒕뱶",
             data=json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
             file_name=selected_report["name"],
             mime="application/json",
@@ -1432,10 +1565,12 @@ def main() -> None:
     frame_map = collect_candidate_frames(local_video, candidates) if candidates else {}
 
     if report.get("model_version") != MODEL_NAME:
-        st.warning(f"이 결과는 `{report.get('model_version')}` 기준 저장본입니다. 현재 기본 모델은 `{MODEL_NAME}` 입니다.")
+        st.warning(f"??寃곌낵??`{report.get('model_version')}` 湲곗? ??λ낯?낅땲?? ?꾩옱 湲곕낯 紐⑤뜽? `{MODEL_NAME}` ?낅땲??")
 
     render_report(report, quality, candidates, frame_map, video_bytes)
 
 
 if __name__ == "__main__":
     main()
+
+
